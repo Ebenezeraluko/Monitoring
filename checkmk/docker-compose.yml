@@ -1,51 +1,30 @@
-version: '3'
 services:
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+  monitoring:
+    # Container Configuration
+    image: checkmk/check-mk-raw:2.4.0-latest  					 # Official Checkmk RAW image
+    container_name: checkmk                  		 				 # Explicit container name
+    restart: unless-stopped                  						 # Auto-restart unless manually stopped
+
+    # Port Mappings 
+    ports:
+      - "8000:8000"    												           # Web UI (HTTP)
+      - "5000:5000"    												           # Livestatus API (agent communication)
+      - "162:162/udp"  												           # SNMP trap receiver (UDP)
+
+    # Environment Variables 
     environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false # for development only
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    ports:
-      - "9200:9200"
-    networks:
-      - elk
+      - TZ=Africa/Lagos   											          # Container timezone
+      - CMK_PASSWORD=${CMK_PASSWORD:?Password not set}  	# Admin password (mandatory)
+      - CMK_SITE_ID=${CMK_SITE_ID:-cmk}      						  # Site ID (default: 'cmk')
 
-  logstash:
-    image: docker.elastic.co/logstash/logstash:8.12.0
-    volumes:
-      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
-    ports:
-      - "5044:5044"
-    depends_on:
-      - elasticsearch
-    networks:
-      - elk
+    # Storage & Performance
+    tmpfs:  														                  # In-memory tmpfs for better performance
+      - /opt/omd/sites/cmk/tmp:uid=1000,gid=1000  				# OMD temp directory with permissions
 
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.12.0
-    ports:
-      - "5601:5601"
-    depends_on:
-      - elasticsearch
-    networks:
-      - elk
-
-  filebeat:
-    image: docker.elastic.co/beats/filebeat:8.12.0
-    user: root
     volumes:
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
-    depends_on:
-      - logstash
-    networks:
-      - elk
+      - /etc/localtime:/etc/localtime:ro    							# Sync host timezone (read-only)
+      - data:/omd/sites:rw                  							# Persistent site data storage
 
 volumes:
-  es_data:
-networks:
-  elk:
-    driver: bridge
+  data:  															                    # Named volume for Checkmk site data
+    driver: local  													              # Stores data on host filesystem
