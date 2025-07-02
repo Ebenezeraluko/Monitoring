@@ -1,0 +1,315 @@
+# CheckMK Setup Guide for Linux Server with Containers
+
+## Prerequisites
+
+- Linux server with root/sudo access
+- Docker or Podman installed and running
+- Network connectivity between CheckMK server and target hosts
+- At least 4GB RAM and 10GB disk space for CheckMK server
+
+## Part 1: Install CheckMK Server
+
+### Step 1: Download CheckMK Raw Edition or Run it as a container using the docker-compose provided
+
+```bash
+# For Ubuntu/Debian
+wget https://download.checkmk.com/checkmk/2.2.0p15/check-mk-raw-2.2.0p15_0.jammy_amd64.deb
+sudo dpkg -i check-mk-raw-2.2.0p15_0.jammy_amd64.deb
+
+# For CentOS/RHEL/Rocky Linux
+wget https://download.checkmk.com/checkmk/2.2.0p15/check-mk-raw-2.2.0p15-el8-38.x86_64.rpm
+sudo rpm -ivh check-mk-raw-2.2.0p15-el8-38.x86_64.rpm
+```
+
+### Step 2: Create CheckMK Site
+
+```bash
+# Create a new site (replace 'mysite' with your preferred name)
+sudo omd create mysite
+
+# Start the site
+sudo omd start mysite
+
+# Get the default admin password
+sudo omd su mysite
+cat ~/var/log/web.log | grep "admin password"
+```
+
+### Step 3: Access CheckMK Web Interface
+
+- Navigate to: `http://your-server-ip/mysite`
+- Login with username: `cmkadmin`
+- Use the password from the previous step
+
+## Part 2: Configure CheckMK for Container Monitoring
+
+### Step 4: Install CheckMK Agent on Target Server
+
+On the server you want to monitor:
+
+```bash
+# Download the agent
+wget http://your-checkmk-server/mysite/check_mk/agents/check_mk_agent.linux
+
+# Make it executable and install
+chmod +x check_mk_agent.linux
+sudo cp check_mk_agent.linux /usr/bin/check_mk_agent
+
+# Install xinetd for agent communication
+sudo apt update && sudo apt install xinetd  # Ubuntu/Debian
+# OR
+sudo yum install xinetd  # CentOS/RHEL
+```
+
+### Step 5: Configure CheckMK Agent Service
+
+Create the xinetd configuration:
+
+```bash
+sudo tee /etc/xinetd.d/check_mk << EOF
+service check_mk
+{
+    type           = UNLISTED
+    port           = 6556
+    socket_type    = stream
+    protocol       = tcp
+    wait           = no
+    user           = root
+    server         = /usr/bin/check_mk_agent
+    log_on_failure += USERID
+    disable        = no
+    only_from      = 127.0.0.1 YOUR_CHECKMK_SERVER_IP
+}
+EOF
+```
+
+Start and enable xinetd:
+
+```bash
+sudo systemctl start xinetd
+sudo systemctl enable xinetd
+sudo systemctl status xinetd
+```
+
+### Step 6: Configure Firewall
+
+```bash
+# Allow CheckMK agent port
+sudo ufw allow 6556/tcp  # Ubuntu/Debian
+# OR
+sudo firewall-cmd --permanent --add-port=6556/tcp  # CentOS/RHEL
+sudo firewall-cmd --reload
+```
+
+## Part 3: Container Monitoring Setup
+
+### Step 7: Install Docker/Container Monitoring Plugin
+
+On the target server with containers:
+
+```bash
+# Install Docker monitoring plugin
+sudo mkdir -p /usr/lib/check_mk_agent/plugins
+sudo wget http://your-checkmk-server/mysite/check_mk/agents/plugins/mk_docker -O /usr/lib/check_mk_agent/plugins/mk_docker
+sudo chmod +x /usr/lib/check_mk_agent/plugins/mk_docker
+
+# For Podman support
+sudo wget http://your-checkmk-server/mysite/check_mk/agents/plugins/mk_podman -O /usr/lib/check_mk_agent/plugins/mk_podman
+sudo chmod +x /usr/lib/check_mk_agent/plugins/mk_podman
+```
+
+### Step 8: Configure Docker Monitoring
+
+Create Docker monitoring configuration:
+
+```bash
+sudo mkdir -p /etc/check_mk
+sudo tee /etc/check_mk/docker.cfg << EOF
+# Docker monitoring configuration
+DOCKER_DAEMON_SOCKET="unix:///var/run/docker.sock"
+DOCKER_STATS_ENABLED=true
+DOCKER_NETWORKS_ENABLED=true
+DOCKER_VOLUMES_ENABLED=true
+EOF
+```
+
+Add the CheckMK agent user to the docker group:
+
+```bash
+sudo usermod -aG docker root
+# OR create a specific user for monitoring
+sudo useradd -r -s /bin/false checkmk
+sudo usermod -aG docker checkmk
+```
+
+### Step 9: Test Agent Connection
+
+From the CheckMK server, test the connection:
+
+```bash
+# Switch to CheckMK site user
+sudo su - mysite
+
+# Test agent connection
+check_mk_agent YOUR_TARGET_SERVER_IP
+```
+
+## Part 4: Add Host to CheckMK
+
+### Step 10: Add Host via Web Interface
+
+1. Go to **Setup** → **Hosts** → **Add host**
+2. Fill in the details:
+   - **Hostname**: Your server's hostname or IP
+   - **Alias**: Descriptive name
+   - **IP Address**: Server's IP address
+3. Click **Save & go to connection tests**
+4. Run the connection test to verify communication
+5. Click **Save & go to service configuration**
+
+### Step 11: Discover Services
+
+1. Click **Fix all** to automatically discover all available services
+2. Review the discovered services (should include Docker containers)
+3. Click **Monitor** to activate monitoring for all services
+4. Go to **Changes** → **Activate pending changes**
+
+## Part 5: Configure Container-Specific Monitoring
+
+### Step 12: Set Up Container Health Rules
+
+1. Go to **Setup** → **Service monitoring rules**
+2. Search for "Docker" to find container-related rules
+3. Configure rules for:
+   - **Docker container status**
+   - **Docker container CPU usage**
+   - **Docker container memory usage**
+   - **Docker container network**
+
+### Step 13: Create Custom Container Dashboards
+
+1. Go to **Monitor** → **Dashboards**
+2. Create a new dashboard for container monitoring
+3. Add relevant views:
+   - Container status overview
+   - Resource usage graphs
+   - Network statistics
+   - Volume usage
+
+### Step 14: Set Up Alerting
+
+1. Go to **Setup** → **Notifications**
+2. Configure notification rules for:
+   - Container failures
+   - High resource usage
+   - Network issues
+3. Set up email or other notification methods
+
+## Part 6: Advanced Configuration
+
+### Step 15: Enable Container Logs Monitoring
+
+Install the log monitoring plugin:
+
+```bash
+# On target server
+sudo mkdir -p /etc/check_mk/logwatch.d
+sudo tee /etc/check_mk/logwatch.d/docker.cfg << EOF
+# Docker container logs
+/var/lib/docker/containers/*/container*.log
+ C CRIT .* (error|ERROR|Error)
+ W WARN .* (warning|WARNING|Warning)
+ I INFO .*
+EOF
+```
+
+### Step 16: Monitor Specific Applications in Containers
+
+For web applications, add HTTP checks:
+
+```bash
+# Create custom local check
+sudo tee /usr/lib/check_mk_agent/local/webapp_check << 'EOF'
+#!/bin/bash
+# Check web application health
+response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+if [ "$response" = "200" ]; then
+    echo "0 WebApp_Health - Application is healthy"
+else
+    echo "2 WebApp_Health - Application returned HTTP $response"
+fi
+EOF
+
+sudo chmod +x /usr/lib/check_mk_agent/local/webapp_check
+```
+
+### Step 17: Performance Tuning
+
+Configure agent caching for better performance:
+
+```bash
+sudo tee /etc/check_mk/agent.cfg << EOF
+# Cache Docker information for 60 seconds
+[docker]
+cache_age: 60
+
+# Enable async execution
+async_execution: yes
+EOF
+```
+
+## Part 7: Maintenance and Troubleshooting
+
+### Common Commands
+
+```bash
+# Restart CheckMK site
+sudo omd restart mysite
+
+# Check site status
+sudo omd status mysite
+
+# View logs
+sudo tail -f /omd/sites/mysite/var/log/web.log
+sudo tail -f /omd/sites/mysite/var/log/cmc.log
+
+# Test agent manually
+telnet target_server_ip 6556
+```
+
+### Troubleshooting Tips
+
+1. **Agent not responding**: Check firewall and xinetd service
+2. **No container data**: Verify Docker socket permissions
+3. **High CPU usage**: Enable agent caching and reduce check intervals
+4. **Missing services**: Run service discovery again
+5. **Authentication issues**: Check agent configuration and IP restrictions
+
+### Backup Configuration
+
+```bash
+# Backup entire site
+sudo omd backup mysite /path/to/backup/mysite-backup.tar.gz
+
+# Backup only configuration
+sudo omd su mysite
+tar -czf ~/etc-backup.tar.gz ~/etc/
+```
+
+## Security Considerations
+
+1. **Restrict agent access**: Only allow CheckMK server IP in xinetd config
+2. **Use SSH tunneling**: For enhanced security over untrusted networks
+3. **Regular updates**: Keep CheckMK and agents updated
+4. **Monitor access logs**: Check for unauthorized access attempts
+5. **Use SSL**: Configure HTTPS for web interface
+
+## Next Steps
+
+- Set up additional monitoring hosts
+- Configure advanced alerting rules
+- Create custom dashboards and reports
+- Implement automated remediation scripts
+- Set up distributed monitoring for large environments
+
+Your CheckMK monitoring system is now configured to monitor your Linux server and its containers. The system will automatically discover new containers and begin monitoring their health, performance, and resource usage.
